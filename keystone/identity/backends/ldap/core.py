@@ -367,6 +367,7 @@ class UserApi(common_ldap.BaseLdap, ApiShimMixin):
         self.attribute_mapping['enabled'] = conf.ldap.user_enabled_attribute
         self.enabled_mask = conf.ldap.user_enabled_mask
         self.enabled_default = conf.ldap.user_enabled_default
+        self.member_attribute = conf.ldap.user_member_attribute
         self.attribute_ignore = (getattr(conf.ldap, 'user_attribute_ignore')
                                  or self.DEFAULT_ATTRIBUTE_IGNORE)
         self.api = ApiShim(conf)
@@ -392,6 +393,12 @@ class UserApi(common_ldap.BaseLdap, ApiShimMixin):
         """Replaces exception.NotFound with exception.UserNotFound."""
         try:
             return super(UserApi, self).get(id, filter)
+        except exception.NotFound:
+            raise exception.UserNotFound(user_id=id)
+
+    def get_entry(self, id, filter=None):
+        try:
+            return super(UserApi, self).get_entry(id, filter)
         except exception.NotFound:
             raise exception.UserNotFound(user_id=id)
 
@@ -463,14 +470,29 @@ class UserApi(common_ldap.BaseLdap, ApiShimMixin):
         except IndexError:
             return None
 
+    def get_member_attribute(self, user_id):
+        if not self.member_attribute or self.member_attribute == self.id_attr:
+            return self._id_to_dn(user_id)
+
+        res = self.get_entry(user_id) 
+        try:
+            v = res[1][self.member_attribute]
+        except KeyError:
+            return None
+
+        try:
+            return v[0]
+        except IndexError:
+            return None
+
     def user_roles_by_tenant(self, user_id, tenant_id):
         return self.role_api.list_tenant_roles_for_user(user_id, tenant_id)
 
     def get_by_tenant(self, user_id, tenant_id):
-        user_dn = self._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         user = self.get(user_id)
         tenant = self.tenant_api._ldap_get(tenant_id,
-                                           '(member=%s)' % (user_dn,))
+                                           '(member=%s)' % (member_value,))
         if tenant is not None:
             return user
         else:
@@ -558,8 +580,8 @@ class TenantApi(common_ldap.BaseLdap, ApiShimMixin):
 
         Always includes default tenants.
         """
-        user_dn = self.user_api._id_to_dn(user_id)
-        query = '(%s=%s)' % (self.member_attribute, user_dn)
+        member_value = self.user_api.get_member_attribute(user_id)
+        query = '(%s=%s)' % (self.member_attribute, member_value)
         memberships = self.get_all(query)
         return memberships
 
@@ -589,7 +611,7 @@ class TenantApi(common_ldap.BaseLdap, ApiShimMixin):
                 self._id_to_dn(tenant_id),
                 [(ldap.MOD_ADD,
                   self.member_attribute,
-                  self.user_api._id_to_dn(user_id))])
+                  self.user_api.get_member_attribute(user_id))])
         except ldap.TYPE_OR_VALUE_EXISTS:
             # As adding a user to a tenant is done implicitly in several
             # places, and is not part of the exposed API, it's easier for us to
@@ -602,7 +624,7 @@ class TenantApi(common_ldap.BaseLdap, ApiShimMixin):
             conn.modify_s(self._id_to_dn(tenant_id),
                           [(ldap.MOD_DELETE,
                             self.member_attribute,
-                            self.user_api._id_to_dn(user_id))])
+                            self.user_api.self.get_member_attribute(user_id))])
         except ldap.NO_SUCH_ATTRIBUTE:
             raise exception.NotFound(user_id)
 
@@ -738,10 +760,10 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
     def add_user(self, role_id, user_id, tenant_id=None):
         role_dn = self._subrole_id_to_dn(role_id, tenant_id)
         conn = self.get_connection()
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         try:
             conn.modify_s(role_dn, [(ldap.MOD_ADD,
-                                     self.member_attribute, user_dn)])
+                                     self.member_attribute, member_value)])
         except ldap.TYPE_OR_VALUE_EXISTS:
             msg = ('User %s already has role %s in tenant %s'
                    % (user_id, role_id, tenant_id))
@@ -751,7 +773,7 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
                 raise Exception(_("Role %s not found") % (role_id,))
 
             attrs = [('objectClass', [self.object_class]),
-                     (self.member_attribute, [user_dn])]
+                     (self.member_attribute, [member_value])]
 
             if self.use_dumb_member:
                 attrs[1][1].append(self.dumb_member)
@@ -769,15 +791,15 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
     def delete_user(self, role_id, user_id, tenant_id):
         role_dn = self._subrole_id_to_dn(role_id, tenant_id)
         conn = self.get_connection()
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         try:
             conn.modify_s(role_dn, [(ldap.MOD_DELETE,
-                                     self.member_attribute, user_dn)])
+                                     self.member_attribute, member_value)])
         except ldap.NO_SUCH_OBJECT:
             if tenant_id is None or self.get(role_id) is None:
                 raise exception.RoleNotFound(role_id=role_id)
             attrs = [('objectClass', [self.object_class]),
-                     (self.member_attribute, [user_dn])]
+                     (self.member_attribute, [member_value])]
 
             if self.use_dumb_member:
                 attrs[1][1].append(self.dumb_member)
@@ -830,8 +852,8 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
         return res
 
     def list_global_roles_for_user(self, user_id):
-        user_dn = self.user_api._id_to_dn(user_id)
-        roles = self.get_all('(%s=%s)' % (self.member_attribute, user_dn))
+        member_value = self.user_api.get_member_attribute(user_id)
+        roles = self.get_all('(%s=%s)' % (self.member_attribute, member_value))
         return [UserRoleAssociation(
                 id=self._create_ref(role.id, None, user_id),
                 role_id=role.id,
@@ -839,10 +861,10 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
 
     def list_tenant_roles_for_user(self, user_id, tenant_id=None):
         conn = self.get_connection()
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         query = '(&(objectClass=%s)(%s=%s))' % (self.object_class,
                                                 self.member_attribute,
-                                                user_dn)
+                                                member_value)
         if tenant_id is not None:
             tenant_dn = self.tenant_api._id_to_dn(tenant_id)
             try:
@@ -879,11 +901,11 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
 
     def rolegrant_get(self, id):
         role_id, tenant_id, user_id = self._explode_ref(id)
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         role_dn = self._subrole_id_to_dn(role_id, tenant_id)
         query = '(&(objectClass=%s)(%s=%s))' % (self.object_class,
                                                 self.member_attribute,
-                                                user_dn)
+                                                member_value)
         conn = self.get_connection()
         try:
             res = conn.search_s(role_dn, ldap.SCOPE_BASE, query)
@@ -898,11 +920,11 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
 
     def rolegrant_delete(self, id):
         role_id, tenant_id, user_id = self._explode_ref(id)
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         role_dn = self._subrole_id_to_dn(role_id, tenant_id)
         conn = self.get_connection()
         try:
-            conn.modify_s(role_dn, [(ldap.MOD_DELETE, '', [user_dn])])
+            conn.modify_s(role_dn, [(ldap.MOD_DELETE, '', [member_value])])
         except ldap.NO_SUCH_ATTRIBUTE:
             raise exception.Error("No such user in role")
 
@@ -981,10 +1003,10 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
 
     def rolegrant_get_by_ids(self, user_id, role_id, tenant_id):
         conn = self.get_connection()
-        user_dn = self.user_api._id_to_dn(user_id)
+        member_value = self.user_api.get_member_attribute(user_id)
         query = '(&(objectClass=%s)(%s=%s))' % (self.object_class,
                                                 self.member_attribute,
-                                                user_dn)
+                                                member_value)
 
         if tenant_id is not None:
             tenant_dn = self.tenant_api._id_to_dn(tenant_id)
