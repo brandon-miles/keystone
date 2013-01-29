@@ -140,7 +140,10 @@ class BaseLdap(object):
 
     @staticmethod
     def _dn_to_id(dn):
-        return ldap.dn.str2dn(dn)[0][0][1]
+        try:
+            return ldap.dn.str2dn(dn)[0][0][1]
+        except ldap.DECODING_ERROR:
+            return dn
 
     def _ldap_res_to_model(self, res):
         obj = self.model(id=self._dn_to_id(res[0]))
@@ -237,6 +240,13 @@ class BaseLdap(object):
             raise exception.NotFound(target=id)
         else:
             return self._ldap_res_to_model(res)
+
+    def get_entry(self, id, filter=None):
+        res = self._ldap_get(id, filter)
+        if res is None:
+            raise exception.NotFound(target=id)
+        else:
+            return res
 
     def get_all(self, filter=None):
         return [self._ldap_res_to_model(x)

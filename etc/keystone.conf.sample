@@ -137,6 +137,7 @@
 # user_name_attribute = sn
 # user_mail_attribute = email
 # user_pass_attribute = userPassword
+# user_member_attribute = None
 # user_enabled_attribute = enabled
 # user_enabled_mask = 0
 # user_enabled_default = True
