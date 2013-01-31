@@ -107,6 +107,7 @@ class BaseLdap(object):
             self.allow_delete = getattr(conf.ldap, allow_delete)
 
             self.structural_classes = self.DEFAULT_STRUCTURAL_CLASSES
+        self.use_flat_membership = getattr(conf.ldap, 'use_flat_membership')
         self.use_dumb_member = getattr(conf.ldap, 'use_dumb_member')
         self.dumb_member = (getattr(conf.ldap, 'dumb_member') or
                             self.DUMB_MEMBER_DN)

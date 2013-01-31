@@ -803,10 +803,13 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
     def get_role_assignments(self, tenant_id):
         conn = self.get_connection()
         query = '(objectClass=%s)' % self.object_class
+        if self.filter is not None:
+            query = '(&%s%s)' % (self.filter, query)
         tenant_dn = self.project_api._id_to_dn(tenant_id)
+        search_dn = self.tree_dn if self.use_flat_membership else tenant_dn
 
         try:
-            roles = conn.search_s(tenant_dn, ldap.SCOPE_ONELEVEL, query)
+            roles = conn.search_s(search_dn, ldap.SCOPE_ONELEVEL, query)
         except ldap.NO_SUCH_OBJECT:
             return []
 
@@ -840,13 +843,16 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
     def list_project_roles_for_user(self, user_id, tenant_id=None):
         conn = self.get_connection()
         user_dn = self.user_api._id_to_dn(user_id)
-        query = '(&(objectClass=%s)(%s=%s))' % (self.object_class,
-                                                self.member_attribute,
-                                                user_dn)
+        filter = '(%s)' % self.filter if self.filter is not None else ''
+        query = '(&(objectClass=%s)(%s=%s)%s)' % (self.object_class,
+                                                  self.member_attribute,
+                                                  user_dn,
+                                                  filter)
         if tenant_id is not None:
             tenant_dn = self.project_api._id_to_dn(tenant_id)
+            search_dn = self.tree_dn if self.use_flat_membership else tenant_dn
             try:
-                roles = conn.search_s(tenant_dn, ldap.SCOPE_ONELEVEL, query)
+                roles = conn.search_s(search_dn, ldap.SCOPE_ONELEVEL, query)
             except ldap.NO_SUCH_OBJECT:
                 return []
 
@@ -859,10 +865,10 @@ class RoleApi(common_ldap.BaseLdap, ApiShimMixin):
                     role_id=role_id,
                     tenant_id=tenant_id))
         else:
+            search_dn = (self.tree_dn if self.use_flat_membership
+                         else self.project_api.tree_dn)
             try:
-                roles = conn.search_s(self.project_api.tree_dn,
-                                      ldap.SCOPE_SUBTREE,
-                                      query)
+                roles = conn.search_s(search_dn, ldap.SCOPE_SUBTREE, query)
             except ldap.NO_SUCH_OBJECT:
                 return []
 
